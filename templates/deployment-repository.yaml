@@ -1,0 +1,167 @@
+# Defines the deployment for the alfresco content repository app
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "content-services.shortname" . }}-repository
+  labels:
+    {{- include "repository.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.repository.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "repository.selectorLabels" . | nindent 6 }}
+  strategy:
+    {{- if eq .Values.repository.strategy.type "Recreate" }}
+    type: {{ .Values.repository.strategy.type }}
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+{{ toYaml .Values.global.strategy.rollingUpdate | indent 6 }}
+    {{- end }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config-repository.yaml") . | sha256sum }}
+        checksum/secretDatabase: {{ include (print $.Template.BasePath "/secret-database.yaml") . | sha256sum }}
+      labels:
+        {{- include "repository.selectorLabels" . | nindent 8 }}
+    spec:
+    {{- include "component-pod-security-context" .Values.repository | indent 4 }}
+    {{- if .Values.repository.nodeSelector }}
+      nodeSelector: {{- .Values.repository.nodeSelector | toYaml | nindent 8 }}
+    {{- end }}
+      {{- include "alfresco-content-services.imagePullSecrets" . | indent 6 }}
+      containers:
+        {{- if .Values.repository.extraSideContainers }}
+{{ tpl .Values.repository.extraSideContainers . | indent 8 }}
+        {{- end }}
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.repository.image.repository }}:{{ .Values.repository.image.tag }}"
+          imagePullPolicy: {{ .Values.repository.image.pullPolicy }}
+          {{- if .Values.repository.command }}
+          command:
+{{ tpl .Values.repository.command . | indent 12 }}
+          {{- end }}
+          {{- include "component-security-context" .Values.repository | indent 8 }}
+          envFrom:
+          - secretRef:
+              name: {{ .Values.database.existingSecretName | default .Values.database.secretName  }}
+          - secretRef:
+              name: {{ template "content-services.shortname" . }}-metadata-keystore-secret
+          - secretRef:
+              name: {{ .Values.messageBroker.existingSecretName | default .Values.messageBroker.secretName }}
+          - secretRef:
+              name: {{ default (printf "%s-repository-secret" (include "content-services.shortname" .)) .Values.repository.existingSecretName }}
+          - configMapRef:
+              # config map to use, defined in config-repository.yaml
+              name: {{ template "content-services.shortname" . }}-repository-configmap
+          ports:
+            # internal port and the hazelcast port used for clustering
+            - containerPort: {{ .Values.repository.image.internalPort }}
+            - containerPort: {{ .Values.repository.image.hazelcastPort }}
+          resources: {{- toYaml .Values.repository.resources | nindent 12 }}
+          volumeMounts:
+          {{- if and (index .Values "alfresco-search" "enabled") (eq .Values.global.tracking.auth "secret") }}
+          - name: repository-properties
+            mountPath: /usr/local/tomcat/shared/classes/alfresco-global.properties
+            subPath: alfresco-global.properties
+          {{- end }}
+          - name: data
+            mountPath: {{ .Values.repository.persistence.data.mountPath }}
+            subPath: {{ .Values.repository.persistence.data.subPath }}
+          {{- if .Values.repository.licenseSecret }}
+          - mountPath: /usr/local/tomcat/shared/classes/alfresco/extension/license/
+            name: acs-license
+          {{- end }}
+          {{- if .Values.repository.extraLogStatements }}
+          - name: repository-logging-properties-volume
+            mountPath: /usr/local/tomcat/shared/classes/alfresco/extension/custom-log4j.properties
+            subPath: custom-log4j.properties
+          - name: repository-logging-properties-volume
+            mountPath: /usr/local/tomcat/shared/classes/alfresco/extension/custom-log4j2.properties
+            subPath: custom-log4j2.properties
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /alfresco/api/-default-/public/alfresco/versions/1/probes/-ready-
+              port: {{ .Values.repository.image.internalPort }}
+            periodSeconds: {{ .Values.repository.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.repository.startupProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /alfresco/api/-default-/public/alfresco/versions/1/probes/-ready-
+              port: {{ .Values.repository.image.internalPort }}
+            initialDelaySeconds: {{ .Values.repository.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.repository.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.repository.readinessProbe.failureThreshold }}
+            timeoutSeconds: {{ .Values.repository.readinessProbe.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /alfresco/api/-default-/public/alfresco/versions/1/probes/-live-
+              port: {{ .Values.repository.image.internalPort }}
+            initialDelaySeconds: {{ .Values.repository.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.repository.livenessProbe.periodSeconds }}
+            failureThreshold: 1
+            timeoutSeconds: {{ .Values.repository.livenessProbe.timeoutSeconds }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/bash", "-c", "sleep 20"]
+      initContainers:
+      {{- if .Values.repository.extraInitContainers }}
+        {{- toYaml .Values.repository.extraInitContainers | nindent 8 }}
+      {{- end }}
+      {{- if not .Values.database.external }}
+        - name: wait-db-ready
+          image: "{{ .Values.repository.initContainers.db.image.repository }}:{{ .Values.repository.initContainers.db.image.tag }}"
+          imagePullPolicy: {{ .Values.repository.initContainers.db.image.pullPolicy }}
+          {{- include "component-security-context" .Values.repository.initContainers.db | indent 8 }}
+          resources: {{- toYaml .Values.repository.initContainers.db.resources | nindent 12 }}
+          command: ['sh', '-c', 'until nc -w1 {{ printf "%s-%s" .Release.Name .Values.postgresql.nameOverride }} {{ .Values.postgresql.primary.service.ports.postgresql }}; do echo "waiting for {{ printf "%s-%s" .Release.Name .Values.postgresql.nameOverride }}"; sleep 2; done;']
+      {{- end }}
+      volumes:
+      {{- include "data_volume" .Values.repository | nindent 8 }}
+      {{- if and (index .Values "alfresco-search" "enabled") (eq .Values.global.tracking.auth "secret") }}
+        - name: repository-properties
+          secret:
+            secretName: {{ template "alfresco.shortname" . }}-repository-properties-secret
+            defaultMode: 0400
+            items:
+              - key: alfresco-global.properties
+                path: alfresco-global.properties
+      {{- end }}
+      {{- if .Values.repository.licenseSecret }}
+        - name: acs-license
+          secret:
+            secretName: {{ .Values.repository.licenseSecret }}
+            defaultMode: 0400
+      {{- end }}
+      {{- if .Values.repository.extraLogStatements }}
+        - name : repository-logging-properties-volume
+          configMap:
+            name: {{ template "alfresco.shortname" . }}-custom-log4j-properties-configmap
+            items:
+            - key: custom-log4j.properties
+              path: custom-log4j.properties
+            - key: custom-log4j2.properties
+              path: custom-log4j2.properties
+      {{- end }}
+        - name: custom-pipeline-config-volume
+          configMap:
+            optional: true
+            name: custom-pipeline-config
+        - name: custom-rendition-config-volume
+          configMap:
+            optional: true
+            name: custom-rendition-config
+        - name: custom-mimetype-config-volume
+          configMap:
+            optional: true
+            name: custom-mimetype-config
+        - name: custom-queryset-config-volume
+          configMap:
+            optional: true
+            name: custom-queryset-config
+      {{- if .Values.repository.extraVolumes }}
+        {{- toYaml .Values.repository.extraVolumes | nindent 8 }}
+      {{- end }}

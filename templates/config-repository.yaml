@@ -1,0 +1,65 @@
+# Defines the properties required by the content repository
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # the name of the config map
+  name: {{ template "content-services.shortname" . }}-repository-configmap
+  labels:
+    {{- include "repository.labels" . | nindent 4 }}
+data:
+  # The JAVA_OPTS defined in the values.yaml file for the "repository" are set here using proper quotes
+  {{- if .Values.repository.environment }}
+  {{- range $key, $val := .Values.repository.environment }}
+  {{ $key }}: {{ tpl $val $ | quote }}
+  {{- end }}
+  {{- end }}
+  RELEASE_NAME: {{ .Release.Name }}
+  {{- $alfUrl := include "alfresco-common.external.url" . }}
+  ALFRESCO_OPTS: >-
+    -Ddeployment.method=HELM_CHART
+    -Dalfresco.cluster.enabled={{ gt (.Values.repository.replicaCount | int) 1 }}
+    {{- if .Values.repository.licenseSecret }}
+    -Ddir.license.external=/usr/local/tomcat/shared/classes/alfresco/extension/license/
+    {{- end }}
+    -Dalfresco.host={{ template "alfresco-common.external.host" . }}
+    -Dalfresco.protocol={{ template "alfresco-common.external.scheme" . }}
+    -Dalfresco.port={{ template "alfresco-common.external.port" . }}
+    -Daos.baseUrlOverwrite={{ $alfUrl }}/alfresco/aos
+    -Dcsrf.filter.origin={{ $alfUrl }}
+    -Dcsrf.filter.referer={{ $alfUrl }}/.*
+    {{- if .Values.share.enabled }}
+    -Dshare.protocol={{ template "alfresco-common.external.scheme" . }}
+    -Dshare.host={{ template "alfresco-common.external.host" . }}
+    -Dshare.port={{ template "alfresco-common.external.port" . }}
+    {{- end }}
+    {{- $subsys := include "repository.indexSubsystem" . -}}
+    {{- if ne $subsys "none" }}
+    {{- include "repository.indexConfig" . | indent 4 }}
+    {{- end }}
+    -Dindex.subsystem.name={{ $subsys }}
+    -Dlocal.transform.service.enabled={{ index .Values "alfresco-transform-service" "enabled" }}
+    {{- with (index .Values "alfresco-transform-service") }}
+    {{- $ats_for_enterprise := and .filestore.enabled .transformrouter.enabled }}
+    -Dtransform.service.enabled={{ and .enabled $ats_for_enterprise }}
+    {{- end }}
+    {{- if index .Values "alfresco-transform-service" "enabled" }}
+    {{- include "alfresco-content-service.atsConfig" . | indent 4 }}
+    {{- end }}
+    -Devents.subsystem.autoStart=false
+  CATALINA_OPTS: >-
+    $ALFRESCO_OPTS
+    -Ddb.driver={{ .Values.database.driver | default "org.postgresql.Driver" }}
+    {{- if eq .Values.database.external false }}
+    -Ddb.url=jdbc:postgresql://{{ printf "%s-%s" .Release.Name .Values.postgresql.nameOverride }}:{{ .Values.postgresql.primary.service.ports.postgresql }}/{{ .Values.postgresql.auth.database }}
+    {{- else }}
+    -Ddb.url={{ .Values.database.url }}
+    {{- end }}
+    -Ddb.username=$DATABASE_USERNAME
+    -Ddb.password=$DATABASE_PASSWORD
+    -Dmetadata-keystore.password=$METADATA_KEYSTORE_PASSWORD
+    -Dmetadata-keystore.metadata.password=$METADATA_KEY_PASSWORD
+    -Dmessaging.broker.url=$BROKER_URL
+    -Dmessaging.broker.username=$BROKER_USERNAME
+    -Dmessaging.broker.password=$BROKER_PASSWORD
+    -Dencryption.ssl.truststore.location=$JAVA_HOME/lib/security/cacerts
+    -Dalfresco_user_store.adminpassword=$REPO_ADMIN_PASSWORD
