@@ -41,9 +41,6 @@ activemq:
 alfresco-search:
   searchServicesImage:
     tag: 2.0.8
-alfresco-digital-workspace:
-  image:
-    tag: 4.1.0
 postgresql:
   image:
     tag: 14.4.0
