@@ -1,25 +1,32 @@
 # This values file can be used to install ACS 7.4.x using the latest version of
 # the chart
 repository:
+  replicaCount: 1
   image:
     tag: 7.4.1
 alfresco-transform-service:
   transformrouter:
+    replicaCount: 1
     image:
       tag: 3.0.0
   pdfrenderer:
+    replicaCount: 1
     image:
       tag: 4.0.0
   imagemagick:
+    replicaCount: 1
     image:
       tag: 4.0.0
   libreoffice:
+    replicaCount: 1
     image:
       tag: 4.0.0
   tika:
+    replicaCount: 1
     image:
       tag: 4.0.0
   transformmisc:
+    replicaCount: 1
     image:
       tag: 4.0.0
   filestore:
